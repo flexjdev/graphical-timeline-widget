@@ -124,17 +124,33 @@ void Timeline::keyPressEvent(QKeyEvent *event)
 
 void Timeline::wheelEvent(QWheelEvent *event)
 {
-    int dY = event->angleDelta().y() / 4.0f;
-    int dX = event->angleDelta().x() / 4.0f;
-    zoomFactor += (1.0f/128.0f) * dY;
-    scrollPos -= (1.0f/128.0f) * zoomFactor * dX;
+    int dY = event->pixelDelta().y();   // Scrolling up and down zooms
+    int dX = event->pixelDelta().x();   // Scrolling left and right scrolls
 
+    // Do not allow the user to scroll horizontally & vertically simultaneously
+    if (abs(dY) > abs(dX)) {
+        zoomContent(dY);
+    } else {
+         scrollContent(dX);
+    }
+
+    event->ignore();
+}
+
+void Timeline::scrollContent(const int &px) {
+    scrollPos -= (px * zoomFactor) / frameSize.width();
     scrollPos = fminf(fmaxf(scrollPos, 0.0f), thumbnails.size() - 1);
+
+    refreshPixmap();
+    update();
+}
+
+void Timeline::zoomContent(const int &px) {
+    zoomFactor += (1.0f/128.0f) * px;
     zoomFactor = fminf(fmaxf(zoomFactor, 1.0f), 8.0f);
 
     refreshPixmap();
-
-    event->ignore();
+    update();
 }
 
 void Timeline::mousePressEvent(QMouseEvent *event)
@@ -168,10 +184,7 @@ void Timeline::mouseMoveEvent(QMouseEvent *event)
     if (mouseLeftPressed) {
         // Perform scrolling/scrubbing
         int dX = event->pos().x() - mouseLastPosition.x();
-        scrollPos -= (dX * zoomFactor) / frameSize.width();
-        scrollPos = fminf(fmaxf(scrollPos, 0.0f), thumbnails.size() - 1);
-        refreshPixmap();
-        update();
+        scrollContent(dX);
     }
 
     if (mouseRightPressed) {
@@ -180,6 +193,7 @@ void Timeline::mouseMoveEvent(QMouseEvent *event)
                                QPoint(event->pos().x(), frameSize.height()));
         updateRubberBandRegion();
     }
+
     mouseLastPosition = event->pos();
 }
 
@@ -205,10 +219,8 @@ void Timeline::refreshPixmap()
     pixmap.fill(backgroundColor);
 
     QPainter painter(&pixmap);
-    //painter.begin(this);
 
     drawThumbnails(&painter);
-
 
     update();
 }
@@ -317,9 +329,6 @@ void Timeline::drawThumbnails(QPainter *painter)
 
     zf = zf_i + zf_f;
 
-
-    //qDebug() << zoomFactor << " " << zf_i << "\t" << zf_f << "\t" << iFrameDelta;
-
     QRect srcRect, dstRect;
 
     float fStart_f;     // frame space: position of next frame to be drawn
@@ -327,19 +336,18 @@ void Timeline::drawThumbnails(QPainter *painter)
     float iFrame = 0;       // index of next frame to be drawn
 
     // Cap scroll position so we don't try to render frame at index < 0
-    scrollPos = fmaxf(scrollPos, 0.0f);
+    fStart_f = fmaxf(scrollPos, 0.0f);
+    fStart_w = 0;
 
     // Which frames are rendered in full and which fractionally, depends on zf
     // FULL         FRAC        FULL            FRAC            FULL
     // [0, zf_i)    [zf_i, zf)  [zf, zf+zf_i)   [zf+zf_i, 2zf)  [2zf, 2zf+zf_i)
     // frm 0                    frm ceil(zf)                    frm ceil(2zf)
-
-    fStart_f = scrollPos;
-    fStart_w = 0;
-
     iFrame = getFrameIndex(fStart_f, zf_i, zf_f, isNextFrac);
 
     int imgIndex;
+
+    painter->setPen(foregroundColor);
 
     while (fStart_w < ww && (ulong)iFrame < thumbnails.size()) {
         QImage image;
@@ -350,7 +358,6 @@ void Timeline::drawThumbnails(QPainter *painter)
 
         if (!(fracFrames && isNextFrac)) {
             // Full frame
-
             srcRect = QRect(0, 0, fw, fh);
             dstRect = QRect(fStart_w - offset * fw, 0, fw, fh);
 
@@ -368,7 +375,7 @@ void Timeline::drawThumbnails(QPainter *painter)
             fStart_w += (1 - offset) * ffw;
         }
 
-        if ((ulong)imgIndex >= thumbnails.size()) {
+        if (imgIndex < 0 || (ulong)imgIndex >= thumbnails.size()) {
             QString error = QString("Cannot access frame {Index: %1, Size: %2}")
                                     .arg(imgIndex).arg(thumbnails.size());
             qDebug() << error;
@@ -379,15 +386,13 @@ void Timeline::drawThumbnails(QPainter *painter)
 
         image = thumbnails.at(imgIndex);
         painter->drawImage(dstRect, image, srcRect);
-        painter->setPen(foregroundColor);
-        if (imgIndex == selectedFrame) {
-            painter->drawRect(dstRect.left(), dstRect.top(),
-                              dstRect.width() - 1, dstRect.height() - 1);
-        }
+
+        // Debugging: draw frame index and (F)ull or (H)alf identified
         painter->drawText(dstRect, Qt::AlignHCenter | Qt::AlignTop,
                           QString::number(imgIndex)
                           + QString(isNextFrac && fracFrames ? "H" : "F"));
 
+        // Advance frame index to the next frame
         if (fracFrames) {
             iFrame += zf_i / 2;
             isNextFrac = !isNextFrac;
@@ -411,6 +416,8 @@ void Timeline::paintEvent(QPaintEvent * /* event */)
         painter.drawRect(rubberBandRect);
     }
 
-    //painter.drawImage(QRect(QPoint(0, 0), size()), image,
-    //                  QRect(QPoint(0, 0), size()));
+    if (true) {
+        painter.drawRect(0, 0, 32, 32);
+    }
+
 }

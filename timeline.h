@@ -14,9 +14,6 @@
  * @author Chris Janusiewicz
  *
  */
-
-// TODO: double buffering
-
 class Timeline : public QWidget
 {
     Q_OBJECT
@@ -73,6 +70,8 @@ private:
 
 
     // TODO: store delays
+    void scrollContent(const int &px);
+    void zoomContent(const int &px);
 
     bool checkSize(const QImage &image);
     void updateRubberBandRegion();
@@ -80,6 +79,7 @@ private:
     float getFrameIndex(const float &x_f, const float &zf_i, const float &zf_f,
                         bool &halfFrame);
     float extractZoomInfo(const float &zoomFactor, float &zf_i, float &zf_f);
+
 
     void refreshPixmap();
     void drawThumbnails(QPainter *painter);

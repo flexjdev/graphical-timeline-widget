@@ -212,6 +212,63 @@ void Timeline::refreshPixmap()
 
     update();
 }
+
+// Conversion from widget space to frame space
+float Timeline::getFrameIndex(const int &x, const int &y) {
+    float zf, zf_i, zf_f;
+    zf = extractZoomInfo(zoomFactor, zf_i, zf_f);
+
+
+}
+
+
+/**
+ * @brief Timeline::getFrameIndex
+ * @param x_f   Frame space: x position
+ * @param zf_i  Full frame interval
+ * @param zf_f
+ * @return
+ */
+float Timeline::getFrameIndex(const float &x_f,
+                              const float &zf_i,
+                              const float &zf_f,
+                              bool &halfFrame) {
+
+    float r = fmodf(x_f, zf_i);
+    int index = floor(x_f / zf_i) * zf_i;
+
+    if (r < zf_i - zf_f || zf_i < 2) {
+        halfFrame = false;
+        return index + r / (zf_i - zf_f);
+    } else {
+        halfFrame = true;
+        return index + (zf_i * 0.5f) + (r - zf_i + zf_f) / zf_f;
+    }
+
+}
+
+
+/**
+ * @brief Timeline::extractZoomInfo Extracts full frame interval
+ *
+ * @param zf_i  Frame space: full frame interval
+ * @param zf_f  Fractional frame width
+ * @return zf
+ */
+float Timeline::extractZoomInfo(const float &zoomFactor,
+                                float &zf_i, float &zf_f) {
+
+    zf_f = zoomFactor - (int)zoomFactor;
+    zf_i = (1 << (int)ceil(zoomFactor - 1));
+
+    if (zf_f) {
+        // Reverse fractional part of zoomFactor
+        zf_f = 1 - zf_f;
+    }
+
+    return zf_i + zf_f;
+}
+
 /**
  * @brief Timeline::drawThumbnails
  * @param painter
@@ -224,41 +281,42 @@ void Timeline::refreshPixmap()
 void Timeline::drawThumbnails(QPainter *painter)
 {
     if (frameSize.width() < 1 || zoomFactor < 1.0f) {
+        QString error = QString("Bad render settings. {fw: %1, zf: %2}")
+                                .arg(frameSize.width()).arg(zoomFactor);
+        qDebug() << error;
         return;
     }
 
+    int ww = size().width();        // widget width
+    int fw = frameSize.width();     // frame width
+    int fh = frameSize.height();    // frame height
+
+    int selectedFrame = 4;
+
     bool fracFrames = true; // whether we are displaying fractional frames
-    bool isNextFrac;    // whether next frame is fractional or full
+    bool isNextFrac = true; // whether next frame is fractional or full
 
-    float zf;
-    float zf_f = zoomFactor - (int)zoomFactor;
-    float zf_i = (1 << (int)ceil(zoomFactor - 1)) - 1;
+    float zf, zf_i, zf_f;
+    zf = extractZoomInfo(zoomFactor, zf_i, zf_f);
 
+    float ffw; // width of fractional frames in widget space
 
-    int iFrameDelta; // how many images to advance between full frame
-    int iFracFrameDelta;  // offset from full to frac frame
+    if ((ffw = (zf_f * fw)) < 0.5f){
+        // Fractional frame width is less than one pixel; don't draw frac frames
+        zf_f = 0;
+        zf = zf_i;
 
-    if (zf_f) {
-        // Reverse fractional part of zoomFactor
-        zf_f = 1 - zf_f;
-    } else {
-        // Fractional part is zero; only drawing full frames.
         fracFrames = false;
     }
-    iFrameDelta = floor(zf_i) +1;
-    iFracFrameDelta = iFrameDelta / 2;
 
     if (zf_i == 0) {
+        //TODO: test whether we don't need this clause anymore
+        qDebug() << "zf_i is ZERO! settings zf_i = 1";
         zf_i++;
-        iFrameDelta = 1;
     }
 
     zf = zf_i + zf_f;
 
-    int ww = size().width();    // widget width
-    int fw = frameSize.width(); // frame width
-    int fh = frameSize.height();
-    float ffw = zf_f * fw; // width of fractional frames in widget space
 
     //qDebug() << zoomFactor << " " << zf_i << "\t" << zf_f << "\t" << iFrameDelta;
 
@@ -266,8 +324,7 @@ void Timeline::drawThumbnails(QPainter *painter)
 
     float fStart_f;     // frame space: position of next frame to be drawn
     int fStart_w = 0;   // widget space: position of next frame to be drawn
-    int iFrame, iFracFrame;     // index of frame and frac frame to be drawn
-    //bool isFull;    // whether next frame is full of fractional
+    float iFrame = 0;       // index of next frame to be drawn
 
     // Cap scroll position so we don't try to render frame at index < 0
     scrollPos = fmaxf(scrollPos, 0.0f);
@@ -276,125 +333,78 @@ void Timeline::drawThumbnails(QPainter *painter)
     // FULL         FRAC        FULL            FRAC            FULL
     // [0, zf_i)    [zf_i, zf)  [zf, zf+zf_i)   [zf+zf_i, 2zf)  [2zf, 2zf+zf_i)
     // frm 0                    frm ceil(zf)                    frm ceil(2zf)
-    fStart_w = 0;
+
     fStart_f = scrollPos;
+    fStart_w = 0;
 
-    // get index of first frame drawn
-    iFrame = (zf_i + 1) * floor(fStart_f / zf);
-    iFracFrame = iFrame + iFracFrameDelta;
+    iFrame = getFrameIndex(fStart_f, zf_i, zf_f, isNextFrac);
 
-    // must get remainder of dividing by zf to determine whether first frame is
-    // full or fractional
-    float r = fmodf(fStart_f, zf);
+    int imgIndex;
 
-    // Part of the first frame might be hidden off screen, only remainder needs
-    // to be drawn: this is a special case
-
-
-    if (r < zf_i || !fracFrames) {
-        // draw full frame
-        float offset = fw * (r / zf_i); // how much of frame is offscreen
-        float width = fw - offset; // how much of frame must be drawn
-
-        srcRect = QRect(offset, 0, width, fh);
-        dstRect = QRect(fStart_w, 0, width, fh);
-
-        if ((ulong)iFrame >= thumbnails.size()) {
-            qDebug() << "Tried to access past end of vector on first frame";
-            return;
-        }
-        QImage image = thumbnails.at(iFrame);
-        painter->drawImage(dstRect, image, srcRect);
-        painter->setPen(foregroundColor);
-        painter->drawText(dstRect, Qt::AlignHCenter | Qt::AlignTop,
-                          QString::number(iFrame) + QString("F"));
-
-
-        fStart_w += width;
-
-        isNextFrac = true;
-    } else {
-        // draw fractional frame
-        r -= zf_i;  // take away integer part of remainder
-        float offset = (r / zf_f); // how much of frame is offscreen
-        float drawn = 1 - offset; // how much of frame must be drawn
-
-        // Use half of offset while drawing from source image to center it
-        srcRect = QRect(ffw * offset * 0.5f, fh * offset * 0.5f,
-                        drawn * ffw, fh * drawn);
-        dstRect = QRect(fStart_w, fh * offset,
-                        drawn * ffw, fh * drawn);
-
-        if ((ulong)iFracFrame >= thumbnails.size()) {
-            qDebug() << "Tried to access past end of vector on first frame";
-            return;
-        }
-        QImage image = thumbnails.at(iFracFrame);
-        painter->drawImage(dstRect, image, srcRect);
-        painter->setPen(foregroundColor);
-        painter->drawText(dstRect, Qt::AlignHCenter | Qt::AlignTop,
-                          QString::number(iFracFrame) + QString("H"));
-
-
-        fStart_w += drawn * ffw;
-        isNextFrac = false;
-    }
-    iFrame += iFrameDelta;
-    iFracFrame +=iFracFrameDelta;
-
-    // Now draw the rest of the frames, fully
     while (fStart_w < ww && (ulong)iFrame < thumbnails.size()) {
         QImage image;
-        int imgIndex;
+        // offset will be 0 apart from first frame which may need to be
+        // rendered offscreen
+        // TODO: clean this up.
+        float offset = iFrame - floor(iFrame);
 
         if (!(fracFrames && isNextFrac)) {
             // Full frame
+
             srcRect = QRect(0, 0, fw, fh);
-            dstRect = QRect(fStart_w, 0, fw, fh);
+            dstRect = QRect(fStart_w - offset * fw, 0, fw, fh);
 
-            imgIndex = iFrame;
+            imgIndex = floor(iFrame);
 
-            fStart_w += fw;
-            iFrame += iFrameDelta;
-            iFracFrame = iFrame + iFracFrameDelta;
+            fStart_w += (1 - offset) * fw;
 
         } else {
             // Fractional frame
             srcRect = QRect((fw - ffw) * 0.5f, 0, ffw, fh);
-            dstRect = QRect(fStart_w, 0, ffw, fh);
+            dstRect = QRect(fStart_w - offset * ffw, 0, ffw, fh);
 
-            imgIndex = iFracFrame;
-            fStart_w += ffw;
+            imgIndex = floor(iFrame);
+
+            fStart_w += (1 - offset) * ffw;
         }
 
         if ((ulong)imgIndex >= thumbnails.size()) {
-            qDebug() << "Tried to access past end of vector";
+            QString error = QString("Cannot access frame {Index: %1, Size: %2}")
+                                    .arg(imgIndex).arg(thumbnails.size());
+            qDebug() << error;
             return;
         }
+
+        iFrame = floor(iFrame);
 
         image = thumbnails.at(imgIndex);
         painter->drawImage(dstRect, image, srcRect);
         painter->setPen(foregroundColor);
+        if (imgIndex == selectedFrame) {
+            painter->drawRect(dstRect.left(), dstRect.top(),
+                              dstRect.width() - 1, dstRect.height() - 1);
+        }
         painter->drawText(dstRect, Qt::AlignHCenter | Qt::AlignTop,
-                          QString::number(imgIndex) + QString(isNextFrac && fracFrames ? "H" : "F"));
+                          QString::number(imgIndex)
+                          + QString(isNextFrac && fracFrames ? "H" : "F"));
 
         if (fracFrames) {
+            iFrame += zf_i / 2;
             isNextFrac = !isNextFrac;
+        } else {
+            iFrame += zf_i;
         }
 
     }
 
 }
 
+
 void Timeline::paintEvent(QPaintEvent * /* event */)
 {
     QPainter painter(this);
 
     painter.drawPixmap(0, 0, pixmap);
-
-
-
-
 
     if (rubberBandShown) {
         painter.setPen(foregroundColor);

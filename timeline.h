@@ -65,15 +65,8 @@ private:
     QRect rubberBandRect;
     QPixmap pixmap;
 
-    /**
-     * @brief zoomFactor Controls scale of timeline: z.f
-     *
-     * integer part of zoomFactor = z: every zth frame drawn full scale;
-     * fractional part of zoomFactor = f: between full frames, a fractional
-     * frames is drawn, the midpoint of neighbouring frames, with a width of f
-     */
     float zoomFactor;
-    float scrollPos;   // Timeline centered around scrollPosition
+    float scrollPos;
 
 
     std::vector<QImage> thumbnails; // Store thumbnails in the timeline struct
@@ -83,6 +76,10 @@ private:
 
     bool checkSize(const QImage &image);
     void updateRubberBandRegion();
+    float getFrameIndex(const int &x_w, const int &y_w);
+    float getFrameIndex(const float &x_f, const float &zf_i, const float &zf_f,
+                        bool &halfFrame);
+    float extractZoomInfo(const float &zoomFactor, float &zf_i, float &zf_f);
 
     void refreshPixmap();
     void drawThumbnails(QPainter *painter);

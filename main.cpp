@@ -14,7 +14,7 @@ int main(int argc, char *argv[])
 
     QString filename = QString(":/images/f001.png");
     QImage earth(filename);
-    earth = earth.scaled(100, 100, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    earth = earth.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     timeline.init(45, earth.size());
     timeline.show();
 
@@ -23,7 +23,7 @@ int main(int argc, char *argv[])
     for (int i = 0; i < 45; i++) {
         filename = QString(":/images/f%1.png").arg(i, 3, 10, QChar('0'));
         earth = QImage(filename);
-        earth = earth.scaled(100, 100, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        earth = earth.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         timeline.setImage(i, earth);
     }
 

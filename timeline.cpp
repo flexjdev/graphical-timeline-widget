@@ -23,8 +23,8 @@ Timeline::Timeline(QWidget *parent) : QWidget(parent)
     image = QImage(size(), QImage::Format_ARGB32);
     image.fill(Qt::black);
 
-    zoomFactor = 2.0f;
-    scrollPos = 4.75;
+    zoomFactor = 2.5f;
+    scrollPos = 0.0f;
 
     refreshPixmap();
 }
@@ -92,9 +92,9 @@ QSize Timeline::sizeHint() const
 {
     if (!defined)
     {
-        return QSize(32,32);
+        return QSize(32, 32);
     }
-    return frameSize;
+    return QSize(frameSize.width() * 8, frameSize.height());
 }
 
 void Timeline::resizeEvent(QResizeEvent * /* event */)
@@ -247,18 +247,41 @@ float Timeline::getFrameIndex(const float &x_f,
                               bool &halfFrame) {
 
     float r = fmodf(x_f, zf_i);
-    int index = floor(x_f / zf_i) * zf_i;
+    float index = floor(x_f / zf_i) * zf_i;
 
     if (r < zf_i - zf_f || zf_i < 2) {
         halfFrame = false;
-        return index + r / (zf_i - zf_f);
+        index = index + r / (zf_i - zf_f);;
+        // return index + r / (zf_i - zf_f);
     } else {
         halfFrame = true;
-        return index + (zf_i * 0.5f) + (r - zf_i + zf_f) / zf_f;
+        index = index + (zf_i * 0.5f) + (r - zf_i + zf_f) / zf_f;
+        //return index + (zf_i * 0.5f) + (r - zf_i + zf_f) / zf_f;
     }
-
+    //qDebug() << index;
+    return index;
 }
 
+float getFrameIndex2(const float &x_f,
+                              const float &zf_i,
+                              const float &zf_f,
+                              bool &halfFrame) {
+
+    float r = fmodf(x_f, zf_i);
+    float index = floor(x_f / zf_i) * zf_i;
+
+    if (r < zf_i - zf_f || zf_i < 2) {
+        halfFrame = false;
+        index = index + r / (zf_i - zf_f);;
+        // return index + r / (zf_i - zf_f);
+    } else {
+        halfFrame = true;
+        index = index + (zf_i * 0.5f) + (r - zf_i + zf_f) / zf_f;
+        //return index + (zf_i * 0.5f) + (r - zf_i + zf_f) / zf_f;
+    }
+    //qDebug() << index;
+    return index;
+}
 
 /**
  * @brief Timeline::extractZoomInfo Extracts full frame interval
@@ -303,8 +326,6 @@ void Timeline::drawThumbnails(QPainter *painter)
     int fw = frameSize.width();     // frame width
     int fh = frameSize.height();    // frame height
 
-    int selectedFrame = 4;
-
     bool fracFrames = true; // whether we are displaying fractional frames
     bool isNextFrac = true; // whether next frame is fractional or full
 
@@ -332,8 +353,9 @@ void Timeline::drawThumbnails(QPainter *painter)
     QRect srcRect, dstRect;
 
     float fStart_f;     // frame space: position of next frame to be drawn
+    float fMid_f;       // frame space: position of center
     int fStart_w = 0;   // widget space: position of next frame to be drawn
-    float iFrame = 0;       // index of next frame to be drawn
+    float iFrame = 0;   // index of next frame to be drawn
 
     // Cap scroll position so we don't try to render frame at index < 0
     fStart_f = fmaxf(scrollPos, 0.0f);
@@ -345,6 +367,13 @@ void Timeline::drawThumbnails(QPainter *painter)
     // frm 0                    frm ceil(zf)                    frm ceil(2zf)
     iFrame = getFrameIndex(fStart_f, zf_i, zf_f, isNextFrac);
 
+    float blocks = width() / (fw * (1 + zf_f));
+    qDebug() << "left: " << fStart_f << " " << iFrame << " " << (isNextFrac ? "H" : "F");
+    fMid_f = fStart_f + (blocks * zf_i * 0.5f);
+    float indexMid = getFrameIndex(fMid_f, zf_i, zf_f, isNextFrac);
+    qDebug() << "mid:  " << fMid_f << " " << indexMid << " " << (isNextFrac ? "H" : "F");
+    iFrame = getFrameIndex2(fStart_f, zf_i, zf_f, isNextFrac);
+    qDebug() << "blocks: " << blocks;
     int imgIndex;
 
     painter->setPen(foregroundColor);
@@ -412,12 +441,25 @@ void Timeline::paintEvent(QPaintEvent * /* event */)
     painter.drawPixmap(0, 0, pixmap);
 
     if (rubberBandShown) {
-        painter.setPen(foregroundColor);
         painter.drawRect(rubberBandRect);
     }
 
-    if (true) {
-        painter.drawRect(0, 0, 32, 32);
+
+    painter.setPen(foregroundColor);
+
+    float zf_f, zf_i;
+    extractZoomInfo(zoomFactor, zf_i, zf_f);
+
+    for (int i = 0; i < 10; i++) {
+        painter.drawLine(i * frameSize.width() * (1 + zf_f), 0, i * frameSize.width() * (1 + zf_f), height());
     }
+
+    painter.setPen(Qt::magenta);
+
+    painter.drawLine(width() * 0.5f, 0, width() * 0.5f, height());
+    painter.drawText(QPoint(width() * 0.5f, height() * 0.5f), QString::number(width() * 0.5f));
+
+    painter.drawText(QPoint(width() * 0.5f, height() * 0.75f), QString::number(frameSize.width() * (1 + zf_f)));
+
 
 }

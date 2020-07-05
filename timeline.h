@@ -28,6 +28,7 @@ public:
     void removeImage(int index);
 
     QSize sizeHint() const;
+    QSize minimumSizeHint() const;
 
     bool isDefined() { return defined; }
 
@@ -53,6 +54,8 @@ private:
     QImage image;
     QSize frameSize;    // size of each thumbnail must stay the same across gif
 
+    int indexSelected;
+    int indexHover;
 
     bool mouseLeftPressed, mouseRightPressed;
     QPoint mouseLeftDownPos, mouseRightDownPos;
@@ -80,6 +83,9 @@ private:
                         bool &halfFrame);
     float extractZoomInfo(const float &zoomFactor, float &zf_i, float &zf_f);
 
+    QRect getFrameRect(const int &index);
+
+    bool hoverChanged(const QPoint &mousePos);
 
     void refreshPixmap();
     void drawThumbnails(QPainter *painter);

@@ -6,25 +6,48 @@
 #include <QRect>
 
 
+#define DEFAULT_ZOOM_INTERVAL 1.0f / 32.0f
+
+
+// TODO: Alter scrolling such that scrolling across H frames is not zoomfactor
+// times faster than scrolling across F frames
+
+// TODO: Implement zooming centered around a selected frame/middle frame
+
+// TODO: rename fractional/frac frames to (H)alf frames for consistency
+
+// TODO: Find correct Qt::Keys for - and + for zooming
+
+// TODO: change underlying storage from vector to something more appropriate:
+// consider using linked list: frames may be inserted and deleted in the middle,
+// whereas unlikely to be added to the end. Random access, indexing? Most likely
+// is not a big issue seeing as this is for manual editing of frames, projects
+// most likely not going to be bigger than 30 * 60 * 10 = 18,000 frames at most
 
 Timeline::Timeline(QWidget *parent) : QWidget(parent)
 {
     defined = false;
     setAttribute(Qt::WA_StaticContents);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
-    //setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
 
     backgroundColor = QWidget::palette().color(QWidget::backgroundRole());
     foregroundColor = QWidget::palette().color(QWidget::foregroundRole());
 
-
+    // enable mouse move events even when no buttons are pressed
+    // TODO: find out if its possible to stop paint events being fired every
+    // time the mouse moves across the widget
+    // TODO: find out why mouse behaves as if captured, on startup
+    setMouseTracking(true);
 
     rubberBandShown = false;
     image = QImage(size(), QImage::Format_ARGB32);
     image.fill(Qt::black);
 
-    zoomFactor = 2.0f;
-    scrollPos = 4.75;
+    zoomFactor = 1.5f;
+    scrollPos = 0.0f;
+
+    indexSelected = -1;
+    indexHover = -1;
 
     refreshPixmap();
 }
@@ -34,7 +57,7 @@ Timeline::Timeline(QWidget *parent) : QWidget(parent)
  * theses start off as empty so be sure to update their thumbnails.
  * @param frameCount
  * @param frameSize The size in pixels of the thumbnails, must stay the same
- * across every frame.
+ * across every frame: this widget does not perform any resizing on its images
  */
 void Timeline::init(int frameCount, QSize frameSize)
 {
@@ -42,9 +65,6 @@ void Timeline::init(int frameCount, QSize frameSize)
     this->thumbnails.resize(frameCount);
     defined = true;
 }
-
-
-
 
 
 /**
@@ -87,8 +107,17 @@ void Timeline::removeImage(int index)
     refreshPixmap();
 }
 
-
 QSize Timeline::sizeHint() const
+{
+    if (!defined)
+    {
+        return QSize(32,32);
+    }
+    return QSize(frameSize.width() * fmin(thumbnails.size(), 8),
+                 frameSize.height());
+}
+
+QSize Timeline::minimumSizeHint() const
 {
     if (!defined)
     {
@@ -104,20 +133,13 @@ void Timeline::resizeEvent(QResizeEvent * /* event */)
 
 void Timeline::keyPressEvent(QKeyEvent *event)
 {
-    //qDebug() << event->key();
     switch(event->key()) {
-    case 61:
-        zoomFactor += 0.03125;
-        zoomFactor = fminf(fmaxf(zoomFactor, 1.0f), 8.0f);
-        refreshPixmap();
-        update();
+    case Qt::Key_Minus:
+        zoomContent(DEFAULT_ZOOM_INTERVAL);
         break;
 
-    case 45:
-        zoomFactor -= 0.03125;
-        zoomFactor = fminf(fmaxf(zoomFactor, 1.0f), 8.0f);
-        refreshPixmap();
-        update();
+    case Qt::Key_Equal:
+        zoomContent(-DEFAULT_ZOOM_INTERVAL);
         break;
     }
 }
@@ -159,6 +181,8 @@ void Timeline::mousePressEvent(QMouseEvent *event)
         mouseLeftPressed = true;
         mouseLeftDownPos = event->pos();
 
+        setCursor(QCursor(Qt::ClosedHandCursor));
+
     } else if (event->button() == Qt::RightButton) {
         mouseRightPressed = true;
         rubberBandShown = true;
@@ -171,6 +195,9 @@ void Timeline::mouseReleaseEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::LeftButton) {
         mouseLeftPressed = false;
+
+        setCursor(QCursor(Qt::ArrowCursor));
+
     } else if (event->button() == Qt::RightButton) {
         mouseRightPressed = false;
         rubberBandShown = false;
@@ -181,6 +208,7 @@ void Timeline::mouseReleaseEvent(QMouseEvent *event)
 
 void Timeline::mouseMoveEvent(QMouseEvent *event)
 {
+
     if (mouseLeftPressed) {
         // Perform scrolling/scrubbing
         int dX = event->pos().x() - mouseLastPosition.x();
@@ -192,6 +220,10 @@ void Timeline::mouseMoveEvent(QMouseEvent *event)
         rubberBandRect = QRect(QPoint(mouseRightDownPos.x(), 0),
                                QPoint(event->pos().x(), frameSize.height()));
         updateRubberBandRegion();
+    }
+
+    if (hoverChanged(event->pos())) {
+        update();
     }
 
     mouseLastPosition = event->pos();
@@ -225,12 +257,63 @@ void Timeline::refreshPixmap()
     update();
 }
 
+
+bool Timeline::hoverChanged(const QPoint &mousePos)
+{
+    // get floating point index under cursor
+    int index = (int)getFrameIndex(mousePos.x(), mousePos.y());
+
+    if (index != indexHover) {
+        // if index changed, repaint
+        indexHover = index;
+        return true;
+    }
+
+    return false;
+}
+
+
+QRect Timeline::getFrameRect(const int &index)
+{
+    int left, width;
+    float zf_i, zf_f;
+    extractZoomInfo(zoomFactor, zf_i, zf_f);
+
+    bool hFrame = !((index % (int)zf_i) == 0.0f);
+
+    float offset = (index - scrollPos) * (1.0f + zf_f) / zf_i;
+
+    if (hFrame) {
+        offset += 1 / (zf_f + 1);
+        width = zf_f * frameSize.width();
+    } else {
+        width = frameSize.width();
+    }
+    //qDebug() << hFrame << " " << index << " " << offset;
+
+    left = offset * frameSize.width();
+
+    return QRect(QPoint(left, 0), QSize(width, frameSize.height()));
+}
+
+
 // Conversion from widget space to frame space
-float Timeline::getFrameIndex(const int &x, const int &y) {
+float Timeline::getFrameIndex(const int &x_w, const int &y_w)
+{
+    if (y_w < 0 && y_w > frameSize.height()) {
+        return -1;
+    }
+
     float zf, zf_i, zf_f;
     zf = extractZoomInfo(zoomFactor, zf_i, zf_f);
 
+    int fw = frameSize.width();
 
+    float x_f = scrollPos + ((float)x_w / (fw * (1 + zf_f))) * zf_i;
+    bool b;
+    float index = getFrameIndex(x_f, zf_i, zf_f, b);
+    qDebug() << (b ? "H" : "F") << " " << x_w << " " << x_f << " " << index << " " << zf_i << " " <<  zf_f;
+    return index;
 }
 
 
@@ -247,13 +330,17 @@ float Timeline::getFrameIndex(const float &x_f,
                               bool &halfFrame) {
 
     float r = fmodf(x_f, zf_i);
-    int index = floor(x_f / zf_i) * zf_i;
+    int index = floor(x_f / zf_i) * zf_i;   // Integer part of index
 
-    if (r < zf_i - zf_f || zf_i < 2) {
+    //r *= (1.0f + zf_f);
+
+    if (r / zf_i < 1 / (zf_f + 1) || zf_i < 2) {
         halfFrame = false;
+        //qDebug() << (halfFrame ? "H" : "F") << " " << r << " " << r / zf_i << " " << 1 / (zf_f + 1) << " " << index << " " << zf_i << " " <<  zf_f;
         return index + r / (zf_i - zf_f);
     } else {
         halfFrame = true;
+        //qDebug() << (halfFrame ? "H" : "F") << " " << r << " " << r / zf_i << " " << 1 / (zf_f + 1) << " " << index << " " << zf_i << " " <<  zf_f;
         return index + (zf_i * 0.5f) + (r - zf_i + zf_f) / zf_f;
     }
 
@@ -261,14 +348,17 @@ float Timeline::getFrameIndex(const float &x_f,
 
 
 /**
- * @brief Timeline::extractZoomInfo Extracts full frame interval
- *
+ * @brief Timeline::extractZoomInfo Converts linearly increasing zoomfactor
+ * to
+ * @param zoomFactor
  * @param zf_i  Frame space: full frame interval
- * @param zf_f  Fractional frame width
- * @return zf
+ * @param zf_f  Half frame width
+ * @return
  */
 float Timeline::extractZoomInfo(const float &zoomFactor,
-                                float &zf_i, float &zf_f) {
+                                float &zf_i,
+                                float &zf_f)
+{
 
     zf_f = zoomFactor - (int)zoomFactor;
     zf_i = (1 << (int)ceil(zoomFactor - 1));
@@ -303,8 +393,6 @@ void Timeline::drawThumbnails(QPainter *painter)
     int fw = frameSize.width();     // frame width
     int fh = frameSize.height();    // frame height
 
-    int selectedFrame = 4;
-
     bool fracFrames = true; // whether we are displaying fractional frames
     bool isNextFrac = true; // whether next frame is fractional or full
 
@@ -320,14 +408,6 @@ void Timeline::drawThumbnails(QPainter *painter)
 
         fracFrames = false;
     }
-
-    if (zf_i == 0) {
-        //TODO: test whether we don't need this clause anymore
-        qDebug() << "zf_i is ZERO! settings zf_i = 1";
-        zf_i++;
-    }
-
-    zf = zf_i + zf_f;
 
     QRect srcRect, dstRect;
 
@@ -411,13 +491,19 @@ void Timeline::paintEvent(QPaintEvent * /* event */)
 
     painter.drawPixmap(0, 0, pixmap);
 
+    painter.setPen(foregroundColor);
+    painter.setPen(Qt::magenta); // easier to see debug text
+
     if (rubberBandShown) {
-        painter.setPen(foregroundColor);
         painter.drawRect(rubberBandRect);
     }
 
-    if (true) {
-        painter.drawRect(0, 0, 32, 32);
+    // testing painting index;
+    if (indexHover != -1) {
+        QRect hover = getFrameRect(indexHover);
+        painter.drawRect(hover);
+        painter.drawText(hover.center(), QString::number(indexHover));
     }
+
 
 }

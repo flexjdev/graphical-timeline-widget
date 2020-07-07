@@ -11,7 +11,5 @@ Qt widget for navigating between and displaying frames of a video/gif file.
 ![Zooming](doc/zoom.gif? "Zooming")
 
 ## TODO:
-- Center zooming on frame in the middle of the widget
 - Allow zooming between rubberband (right click and drag)
-- Draw indicator on frame over which cursor is hovering
 - Allow clicking of a frame to select

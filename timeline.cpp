@@ -5,16 +5,12 @@
 #include <QPoint>
 #include <QRect>
 
+#define DEFAULT_ZOOM_INTERVAL 1.0f / 32.0f
+#define DEFAULT_SCROLL_INTERVAL 1.0f / 32.0f
 
 #define DEFAULT_ZOOM_INTERVAL 1.0f / 32.0f
 
-
-// TODO: Alter scrolling such that scrolling across H frames is not zoomfactor
-// times faster than scrolling across F frames
-
-// TODO: Implement zooming centered around a selected frame/middle frame
-
-// TODO: rename fractional/frac frames to (H)alf frames for consistency
+// TODO: Slots and signals
 
 // TODO: Find correct Qt::Keys for - and + for zooming
 
@@ -43,13 +39,20 @@ Timeline::Timeline(QWidget *parent) : QWidget(parent)
     image = QImage(size(), QImage::Format_ARGB32);
     image.fill(Qt::black);
 
-    zoomFactor = 1.5f;
-    scrollPos = 0.0f;
+    selectIndex = -1;
+    hoverIndex = -1;
 
-    indexSelected = -1;
-    indexHover = -1;
+    frameSize = QSize(32,32);
+
+    setZoom(2.75f);
+    setPos(16.0f);
 
     refreshPixmap();
+}
+
+
+void Timeline::setSelectIndex(const int &index){
+    // TODO
 }
 
 /**
@@ -111,7 +114,7 @@ QSize Timeline::sizeHint() const
 {
     if (!defined)
     {
-        return QSize(32,32);
+        return QSize(32, 32);
     }
     return QSize(frameSize.width() * fmin(thumbnails.size(), 8),
                  frameSize.height());
@@ -119,7 +122,7 @@ QSize Timeline::sizeHint() const
 
 QSize Timeline::minimumSizeHint() const
 {
-    if (!defined)
+    if (!defined || frameSize.width() < 1 || frameSize.height() < 1)
     {
         return QSize(32,32);
     }
@@ -135,11 +138,11 @@ void Timeline::keyPressEvent(QKeyEvent *event)
 {
     switch(event->key()) {
     case Qt::Key_Minus:
-        zoomContent(DEFAULT_ZOOM_INTERVAL);
+        adjustZoom(DEFAULT_ZOOM_INTERVAL);
         break;
 
     case Qt::Key_Equal:
-        zoomContent(-DEFAULT_ZOOM_INTERVAL);
+        adjustZoom(-DEFAULT_ZOOM_INTERVAL);
         break;
     }
 }
@@ -151,29 +154,62 @@ void Timeline::wheelEvent(QWheelEvent *event)
 
     // Do not allow the user to scroll horizontally & vertically simultaneously
     if (abs(dY) > abs(dX)) {
-        zoomContent(dY);
+        adjustZoom(dY);
     } else {
-         scrollContent(dX);
+        adjustPos(dX);
     }
 
     event->ignore();
 }
 
-void Timeline::scrollContent(const int &px) {
-    scrollPos -= (px * zoomFactor) / frameSize.width();
-    scrollPos = fminf(fmaxf(scrollPos, 0.0f), thumbnails.size() - 1);
+void Timeline::adjustPos(const int &px)
+{
+    setPos(scrollPos - px * zoomFactor / frameSize.width());
+}
+
+void Timeline::setPos(const float &pos)
+{
+    float minScrollPos = zf_i * width() * 0.5f / ((1.0f + zf_f) * frameSize.width());
+
+    scrollPos = fminf(fmaxf(pos, minScrollPos), thumbnails.size() - 1);
+
+    sp_f = scrollPos;
+
+    updateOverlay();
+    refreshPixmap();
+    update();
+}
+
+
+void Timeline::setZoom(const float &zoom)
+{
+    // Maximum zoom N means n=2^(N-1), Every nth frame drawn
+    zoomFactor = fminf(fmaxf(zoom, 1.0f), 5.0f);
+
+    zf_f = zoomFactor - (int)zoomFactor; // Width of half frames
+    zf_i = (1 << (int)ceil(zoomFactor - 1)); // Frame space: full frame interval
+
+    if (zf_f * frameSize.width() < 0.5f){
+        // Fractional frame width is less than one pixel; don't draw frac frames
+        zf_f = 0;
+        halfFrames = false;
+    } else {
+        // Reverse fractional part of zoomFactor (for smooth scrolling)
+        zf_f = 1 - zf_f;
+        halfFrames = true;
+    }
+
+    // May need to adjust scroll position if we zoomed out far enough
+    adjustPos(0);
 
     refreshPixmap();
     update();
 }
 
-void Timeline::zoomContent(const int &px) {
-    zoomFactor += (1.0f/128.0f) * px;
-    zoomFactor = fminf(fmaxf(zoomFactor, 1.0f), 8.0f);
-
-    refreshPixmap();
-    update();
+void Timeline::adjustZoom(const int &px) {
+    setZoom(zoomFactor + (1.0f/128.0f) * px);
 }
+
 
 void Timeline::mousePressEvent(QMouseEvent *event)
 {
@@ -212,7 +248,7 @@ void Timeline::mouseMoveEvent(QMouseEvent *event)
     if (mouseLeftPressed) {
         // Perform scrolling/scrubbing
         int dX = event->pos().x() - mouseLastPosition.x();
-        scrollContent(dX);
+        adjustPos(dX);
     }
 
     if (mouseRightPressed) {
@@ -222,11 +258,16 @@ void Timeline::mouseMoveEvent(QMouseEvent *event)
         updateRubberBandRegion();
     }
 
-    if (hoverChanged(event->pos())) {
+    mouseLastPosition = event->pos();
+
+    updateOverlay();
+
+    if (hoverChanged || selectChanged) {
+        hoverChanged = false;
+        selectChanged = false;
         update();
     }
 
-    mouseLastPosition = event->pos();
 }
 
 
@@ -258,118 +299,86 @@ void Timeline::refreshPixmap()
 }
 
 
-bool Timeline::hoverChanged(const QPoint &mousePos)
-{
-    // get floating point index under cursor
-    int index = (int)getFrameIndex(mousePos.x(), mousePos.y());
-
-    if (index != indexHover) {
-        // if index changed, repaint
-        indexHover = index;
-        return true;
-    }
-
-    return false;
-}
-
-
-QRect Timeline::getFrameRect(const int &index)
-{
-    int left, width;
-    float zf_i, zf_f;
-    extractZoomInfo(zoomFactor, zf_i, zf_f);
-
-    bool hFrame = !((index % (int)zf_i) == 0.0f);
-
-    float offset = (index - scrollPos) * (1.0f + zf_f) / zf_i;
-
-    if (hFrame) {
-        offset += 1 / (zf_f + 1);
-        width = zf_f * frameSize.width();
-    } else {
-        width = frameSize.width();
-    }
-    //qDebug() << hFrame << " " << index << " " << offset;
-
-    left = offset * frameSize.width();
-
-    return QRect(QPoint(left, 0), QSize(width, frameSize.height()));
-}
-
-
-// Conversion from widget space to frame space
-float Timeline::getFrameIndex(const int &x_w, const int &y_w)
-{
-    if (y_w < 0 && y_w > frameSize.height()) {
-        return -1;
-    }
-
-    float zf, zf_i, zf_f;
-    zf = extractZoomInfo(zoomFactor, zf_i, zf_f);
-
-    int fw = frameSize.width();
-
-    float x_f = scrollPos + ((float)x_w / (fw * (1 + zf_f))) * zf_i;
-    bool b;
-    float index = getFrameIndex(x_f, zf_i, zf_f, b);
-    qDebug() << (b ? "H" : "F") << " " << x_w << " " << x_f << " " << index << " " << zf_i << " " <<  zf_f;
-    return index;
-}
-
-
 /**
- * @brief Timeline::getFrameIndex
- * @param x_f   Frame space: x position
- * @param zf_i  Full frame interval
- * @param zf_f
+ * @brief Timeline::getFrameAtIndex
+ * @param x_f
+ * @param halfFrame
  * @return
  */
-float Timeline::getFrameIndex(const float &x_f,
-                              const float &zf_i,
-                              const float &zf_f,
-                              bool &halfFrame) {
+float Timeline::getFrameIndex(const float &x_f, bool &halfFrame)
+{
+    // Which frames are rendered in full and which fractionally, depends on zf
+
+    // WIDGET SPACE
+    // FULL      FRAC           FULL            FRAC
+    // [0, 1)    [1, 1+zf_f)    [1+zf, 2+zf)    [2+2zf, 2+2zf)
+    // 1         zf             1               zf
+
+    // FRAME SPACE
+    // 0         zf_i / 2       zf_i            zf_i + zf_i / 2
 
     float r = fmodf(x_f, zf_i);
     int index = floor(x_f / zf_i) * zf_i;   // Integer part of index
 
-    //r *= (1.0f + zf_f);
+    // Boundary between full frame and half frame is at r = zf_i / (1 + zf_f)
 
-    if (r / zf_i < 1 / (zf_f + 1) || zf_i < 2) {
+    if (r < zf_i / (zf_f + 1) || zf_i < 2) {
+        // if zf_i < 2, there are no half frame indices between full frames
         halfFrame = false;
-        //qDebug() << (halfFrame ? "H" : "F") << " " << r << " " << r / zf_i << " " << 1 / (zf_f + 1) << " " << index << " " << zf_i << " " <<  zf_f;
-        return index + r / (zf_i - zf_f);
+        return index + r * (1 + zf_f) / zf_i;
     } else {
         halfFrame = true;
         //qDebug() << (halfFrame ? "H" : "F") << " " << r << " " << r / zf_i << " " << 1 / (zf_f + 1) << " " << index << " " << zf_i << " " <<  zf_f;
-        return index + (zf_i * 0.5f) + (r - zf_i + zf_f) / zf_f;
+        return index + (zf_i * 0.5f)
+                + (r - (zf_i / (1 + zf_f))) / (zf_i - (zf_i / (1 + zf_f)));
     }
-
 }
 
+
+int Timeline::getFullFrameIndex(const float &x_f)
+{
+    return floor(x_f / zf_i) * zf_i;   // Integer part of index
+}
+
+
+// Conversion from widget space to frame space
+float Timeline::toFrameSpace(const int &x_w)
+{
+    return sp_f + zf_i *
+            (x_w - 0.5f * width()) / ((1.0f + zf_f) * frameSize.width());
+}
+
+
+int Timeline::toWidgetSpace(const float &x_f)
+{
+    return 0.5f * width() +
+            frameSize.width() * (zf_f + 1) * (x_f - sp_f) / zf_i;
+}
 
 /**
- * @brief Timeline::extractZoomInfo Converts linearly increasing zoomfactor
- * to
- * @param zoomFactor
- * @param zf_i  Frame space: full frame interval
- * @param zf_f  Half frame width
+ * @brief Timeline::getFrameRect Rect of frame drawn under cursor
+ * @param x_w
  * @return
  */
-float Timeline::extractZoomInfo(const float &zoomFactor,
-                                float &zf_i,
-                                float &zf_f)
+QRect Timeline::getFrameRect(const int &x_w)
 {
+    int left, width;
+    width = frameSize.width();
 
-    zf_f = zoomFactor - (int)zoomFactor;
-    zf_i = (1 << (int)ceil(zoomFactor - 1));
+    bool hFrame;
 
-    if (zf_f) {
-        // Reverse fractional part of zoomFactor
-        zf_f = 1 - zf_f;
+    float fIndex = getFrameIndex(toFrameSpace(x_w), hFrame);
+
+    if (!hFrame) {
+        width = frameSize.width();
+        left = toWidgetSpace(floor(fIndex));
+    } else {
+        width = zf_f * frameSize.width();
+        left = toWidgetSpace(floor(fIndex - zf_i / 2)) + frameSize.width();
     }
-
-    return zf_i + zf_f;
+    return QRect(left, 0, width, frameSize.height());
 }
+
 
 /**
  * @brief Timeline::drawThumbnails
@@ -392,90 +401,63 @@ void Timeline::drawThumbnails(QPainter *painter)
     int ww = size().width();        // widget width
     int fw = frameSize.width();     // frame width
     int fh = frameSize.height();    // frame height
+    float hfw = fw * zf_f; // width of half frames in widget space
 
-    bool fracFrames = true; // whether we are displaying fractional frames
-    bool isNextFrac = true; // whether next frame is fractional or full
-
-    float zf, zf_i, zf_f;
-    zf = extractZoomInfo(zoomFactor, zf_i, zf_f);
-
-    float ffw; // width of fractional frames in widget space
-
-    if ((ffw = (zf_f * fw)) < 0.5f){
-        // Fractional frame width is less than one pixel; don't draw frac frames
-        zf_f = 0;
-        zf = zf_i;
-
-        fracFrames = false;
-    }
-
-    QRect srcRect, dstRect;
+    bool halfFrame = false; // whether next frame is full or half
 
     float fStart_f;     // frame space: position of next frame to be drawn
-    int fStart_w = 0;   // widget space: position of next frame to be drawn
-    float iFrame = 0;       // index of next frame to be drawn
+    float fStart_w = 0;   // widget space: position of next frame to be drawn
+    int iFrame = 0;   // index of next frame to be drawn
 
-    // Cap scroll position so we don't try to render frame at index < 0
-    fStart_f = fmaxf(scrollPos, 0.0f);
-    fStart_w = 0;
+    fStart_f = toFrameSpace(0); //
 
-    // Which frames are rendered in full and which fractionally, depends on zf
-    // FULL         FRAC        FULL            FRAC            FULL
-    // [0, zf_i)    [zf_i, zf)  [zf, zf+zf_i)   [zf+zf_i, 2zf)  [2zf, 2zf+zf_i)
-    // frm 0                    frm ceil(zf)                    frm ceil(2zf)
-    iFrame = getFrameIndex(fStart_f, zf_i, zf_f, isNextFrac);
+    iFrame = getFullFrameIndex(fStart_f);
 
-    int imgIndex;
+    fStart_w = toWidgetSpace(iFrame);
 
     painter->setPen(foregroundColor);
 
-    while (fStart_w < ww && (ulong)iFrame < thumbnails.size()) {
-        QImage image;
-        // offset will be 0 apart from first frame which may need to be
-        // rendered offscreen
-        // TODO: clean this up.
-        float offset = iFrame - floor(iFrame);
+    QRect srcRect, dstRect;
 
-        if (!(fracFrames && isNextFrac)) {
+    while (fStart_w < ww && (ulong)iFrame < thumbnails.size()) {
+
+        if (!(halfFrames && halfFrame)) {
             // Full frame
             srcRect = QRect(0, 0, fw, fh);
-            dstRect = QRect(fStart_w - offset * fw, 0, fw, fh);
+            dstRect = QRect(fStart_w, 0, fw, fh);
 
-            imgIndex = floor(iFrame);
-
-            fStart_w += (1 - offset) * fw;
+            fStart_w += fw;
 
         } else {
-            // Fractional frame
-            srcRect = QRect((fw - ffw) * 0.5f, 0, ffw, fh);
-            dstRect = QRect(fStart_w - offset * ffw, 0, ffw, fh);
+            // Half frame
+            srcRect = QRect(fw * (1 - zf_f) * 0.5f, 0, hfw, fh);
+            dstRect = QRect(fStart_w, 0, hfw, fh);
 
-            imgIndex = floor(iFrame);
-
-            fStart_w += (1 - offset) * ffw;
+            fStart_w += hfw;
         }
 
-        if (imgIndex < 0 || (ulong)imgIndex >= thumbnails.size()) {
+        if (iFrame < 0 || (ulong)iFrame >= thumbnails.size()) {
             QString error = QString("Cannot access frame {Index: %1, Size: %2}")
-                                    .arg(imgIndex).arg(thumbnails.size());
+                                    .arg(iFrame).arg(thumbnails.size());
             qDebug() << error;
             return;
         }
 
-        iFrame = floor(iFrame);
+        QImage image = thumbnails.at(iFrame);
 
-        image = thumbnails.at(imgIndex);
-        painter->drawImage(dstRect, image, srcRect);
+        if (dstRect.right() >= 0) {
+            painter->drawImage(dstRect, image, srcRect);
+        }
 
         // Debugging: draw frame index and (F)ull or (H)alf identified
         painter->drawText(dstRect, Qt::AlignHCenter | Qt::AlignTop,
-                          QString::number(imgIndex)
-                          + QString(isNextFrac && fracFrames ? "H" : "F"));
+                          QString::number(iFrame)
+                          + QString(halfFrame && halfFrames ? "H" : "F"));
 
         // Advance frame index to the next frame
-        if (fracFrames) {
+        if (halfFrames) {
             iFrame += zf_i / 2;
-            isNextFrac = !isNextFrac;
+            halfFrame = !halfFrame;
         } else {
             iFrame += zf_i;
         }
@@ -484,6 +466,13 @@ void Timeline::drawThumbnails(QPainter *painter)
 
 }
 
+void Timeline::updateOverlay()
+{
+    // TODO: Get hovered and selected frame bounds here
+
+
+
+}
 
 void Timeline::paintEvent(QPaintEvent * /* event */)
 {
@@ -491,19 +480,20 @@ void Timeline::paintEvent(QPaintEvent * /* event */)
 
     painter.drawPixmap(0, 0, pixmap);
 
-    painter.setPen(foregroundColor);
-    painter.setPen(Qt::magenta); // easier to see debug text
 
     if (rubberBandShown) {
         painter.drawRect(rubberBandRect);
     }
 
-    // testing painting index;
-    if (indexHover != -1) {
-        QRect hover = getFrameRect(indexHover);
-        painter.drawRect(hover);
-        painter.drawText(hover.center(), QString::number(indexHover));
+    painter.setPen(foregroundColor);
+    if (hoverIndex != -1) {
+        painter.drawRect(hoverRect);
+        painter.drawText(hoverRect.center(), QString::number(hoverIndex));
     }
 
-
+    painter.setPen(Qt::magenta);
+    if (selectIndex != -1) {
+        painter.drawRect(selectRect);
+        painter.drawText(selectRect.center(), QString::number(selectIndex));
+    }
 }
